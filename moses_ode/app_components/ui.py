@@ -328,27 +328,92 @@ def create_problem_definition_ui():
             st.session_state.show_validation_success = False 
             try:
                 # Use the key state for validation
-                if not st.session_state.ode_input:
+                ode_input_val = st.session_state.get('ode_input', '') # Use .get for safety
+                if not ode_input_val:
                     st.error("Please enter an ODE equation first.")
-                    st.stop()
+                    st.stop() # Use st.stop() to halt execution here
                 
-                ode_for_validation = st.session_state.ode_input
-                # ... (rest of validation logic using ode_for_validation) ...
+                # Use the input value from the key for parsing/validation
+                ode_for_validation = ode_input_val
+                
+                # Determine ode_to_parse and num_initial_conditions_needed based on format
+                ode_to_parse = ode_for_validation # Default
+                is_d_notation = False
+                num_initial_conditions_needed = 1 # Default
+                
+                if '=' not in ode_for_validation:
+                    if (ode_for_validation.strip().startswith('[') and ode_for_validation.strip().endswith(']')):
+                         # System: [f0, f1, ...]
+                         ode_to_parse = ode_for_validation
+                         try:
+                             num_elements = len(ode_to_parse.strip()[1:-1].split(','))
+                             num_initial_conditions_needed = num_elements if num_elements > 0 else 1
+                         except Exception: num_initial_conditions_needed = 1 # Fallback
+                    else:
+                         # Simple expression: y' = f(t, y)
+                         ode_to_parse = ode_for_validation
+                         num_initial_conditions_needed = 1
+                else: # Contains '='
+                    parts = ode_for_validation.strip().split('=', 1)
+                    lhs = parts[0].strip()
+                    rhs = parts[1].strip()
 
-            except ValueError as ve: # Catch specific ValueErrors (e.g., from sys_of_ode)
+                    if lhs.startswith('D') and 'y' in lhs:
+                         is_d_notation = True
+                         try:
+                             from moses_ode.parsing.symbolic_parser import sys_of_ode
+                             converted_system_string = sys_of_ode(ode_for_validation)
+                             ode_to_parse = converted_system_string
+                             # Determine order for dummy y0 shape
+                             if lhs == 'Dy': order = 1
+                             elif lhs.startswith('D') and lhs.endswith('y') and lhs[1:-1].isdigit():
+                                 order = int(lhs[1:-1])
+                             else: order = 1 # Fallback
+                             num_initial_conditions_needed = order if order > 0 else 1
+                         except Exception as sys_ode_err:
+                             st.error(f"Error processing D-notation: {sys_ode_err}")
+                             st.stop()
+                    elif lhs.lower() in ['y\'', 'dy/dt', 'd1y']:
+                         ode_to_parse = rhs
+                         num_initial_conditions_needed = 1
+                    else:
+                         st.error(f"Unrecognized equation format for validation: '{lhs} = ...'. Try solving directly.")
+                         st.stop()
+
+                # Try to parse the function string (either converted or original RHS/system)
+                with st.spinner("Validating equation syntax..."):
+                    # Remove the explicit check for '^' as parsers now handle it via replacement
+                    # if '^' in ode_to_parse:
+                    #    st.error("Invalid syntax: Use '**' for exponentiation, not '^'.")
+                    #    st.stop()
+
+                    f = parse_function_string(ode_to_parse) # This handles ^ -> ** internally via sympify
+
+                    # Test with dummy values 
+                    if num_initial_conditions_needed < 1: num_initial_conditions_needed = 1
+                    dummy_y0 = np.zeros(num_initial_conditions_needed)
+                    
+                    try:
+                       f_validated = validate_function_input(f, 0.0, dummy_y0)
+                       st.session_state.show_validation_success = True # Mark success
+                    except Exception as validate_err:
+                       logger.error(f"Validation with dummy values failed: {validate_err}") 
+                       st.error(f"Validation Error: {validate_err}")
+                       st.info("The basic syntax seems okay, but the function might not behave as expected with the required inputs/outputs.")
+
+            except ValueError as ve:
                 st.error(f"Validation Error: {str(ve)}")
-                st.info("Please check the structure of your D-notation ODE.")
+                st.info("Please check the structure of your D-notation or function.")
             except Exception as e:
-                # General parsing error
-                logger.error(f"General validation error: {e}", exc_info=True) # Log full traceback
+                logger.error(f"General validation error: {e}", exc_info=True) 
                 st.error(f"Invalid equation syntax or structure: {str(e)}")
-                st.info("Check your syntax (e.g., use '**' for power) or the overall equation structure.")
+                st.info("Check syntax (e.g., use '**' or '^ ' for power) or the overall equation structure.")
         
-        # Use get() for safer access to session state
+        # Display persistent success message if flag is set
         if st.session_state.get("show_validation_success", False):
             st.success("Equation syntax appears valid! ✓")
-            # Reset after showing - important!
-            st.session_state.show_validation_success = False
+            # Remove the immediate reset to make the message persistent until next validation
+            # st.session_state.show_validation_success = False
 
     # Display loaded example/library info
     if st.session_state.get("example_loaded", False) and "selected_example" in st.session_state:
