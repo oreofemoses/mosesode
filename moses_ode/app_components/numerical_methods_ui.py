@@ -4,57 +4,144 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import time
 import sympy as sp # Import sympy once at the top
+import re # Import regex
 
 # Import necessary functions from the library
 from moses_ode.numerical.integration import trapezoid, simpson_1_3, simpson_3_8, romberg
 from moses_ode.numerical.differentiation import forward_difference, backward_difference, central_difference, second_derivative
-from moses_ode.parsing.function_parser import parse_function_string
 
-# Helper function to safely parse and evaluate a function string (common to both tabs)
-def _prepare_function(func_string, var='x'):
-    """Parses a function string and returns a callable function. Handles parsing errors."""
-    # Try using the ODE parser first (replace variable for compatibility)
+# --- Add CSS for LaTeX Preview ---
+st.markdown("""
+<style>
+.latex-preview {
+    background-color: #f0f8ff;
+    border-radius: 6px;
+    padding: 10px;
+    margin-bottom: 10px; /* Space below preview, above input */
+    border: 1px solid #e0e0e0;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# --- LaTeX Converter for Numerical Functions ---
+def convert_numerical_function_to_latex(func_string, var='x'):
+    """
+    Converts a single-variable function string (e.g., f(x)) to LaTeX format.
+    Uses SymPy for parsing and rendering.
+    """
+    if not func_string or func_string.strip() == "":
+        return "" # Return empty string if input is empty
+
+    # Prepare string for SymPy parsing
+    sympy_str = func_string.replace('^', '**').replace('ln(', 'log(')
+
+    # Define the symbolic variable
+    x_sym = sp.Symbol(var)
+
+    # Define allowed functions/constants for SymPy parsing
+    sympy_namespace = {
+        var: x_sym,
+        "sin": sp.sin, "cos": sp.cos, "tan": sp.tan,
+        "asin": sp.asin, "acos": sp.acos, "atan": sp.atan, "atan2": sp.atan2,
+        "sinh": sp.sinh, "cosh": sp.cosh, "tanh": sp.tanh,
+        "exp": sp.exp, "log": sp.log, # log is natural log in SymPy
+        "log10": lambda arg: sp.log(arg, 10),
+        "log2": lambda arg: sp.log(arg, 2),
+        "sqrt": sp.sqrt, "cbrt": lambda arg: arg**(1/3),
+        "abs": sp.Abs,
+        "pi": sp.pi, "E": sp.E, "I": sp.I
+    }
+
     try:
-        f_str = func_string.replace(var, 't') # Use 't' as expected by parse_function_string
-        f_parsed = parse_function_string(f_str)
-        
-        # Create a wrapper function compatible with numerical methods
-        def f_wrapped(val):
+        # Parse the expression using SymPy
+        expr = sp.sympify(sympy_str, locals=sympy_namespace)
+        # Return the LaTeX representation
+        return sp.latex(expr)
+    except (sp.SympifyError, SyntaxError, TypeError) as parse_err:
+        # If parsing fails, return the original string (or an error indicator)
+        # Returning the (potentially invalid) string allows user to see what they typed
+        return func_string # Fallback to the processed string
+    except Exception as e:
+        # Catch other errors
+        # Optionally log this error
+        return func_string # Fallback
+
+# Helper function to safely parse and evaluate a function string using SymPy
+def _prepare_function(func_string, var='x'):
+    """
+    Parses a function string f(var) using SymPy and returns a callable NumPy function.
+    Consistent with SymPy parsing used elsewhere, tailored for single-variable functions.
+    Handles parsing errors.
+    """
+    if not func_string:
+        st.error("Function string is empty.")
+        return lambda val: np.nan # Return a function that returns NaN
+
+    # Prepare string for SymPy: replace ^ and handle ln
+    sympy_str = func_string.replace('^', '**').replace('ln(', 'log(')
+
+    # Define the symbolic variable
+    x_sym = sp.Symbol(var)
+
+    # Define allowed functions/constants for SymPy parsing
+    # Map standard names to their SymPy equivalents
+    sympy_namespace = {
+        var: x_sym,
+        "sin": sp.sin, "cos": sp.cos, "tan": sp.tan,
+        "asin": sp.asin, "acos": sp.acos, "atan": sp.atan, "atan2": sp.atan2,
+        "sinh": sp.sinh, "cosh": sp.cosh, "tanh": sp.tanh,
+        "exp": sp.exp, "log": sp.log, # log is natural log in SymPy
+        "log10": lambda arg: sp.log(arg, 10), # Define log base 10
+        "log2": lambda arg: sp.log(arg, 2),  # Define log base 2
+        "sqrt": sp.sqrt, "cbrt": lambda arg: arg**(1/3), # Cube root
+        "abs": sp.Abs,
+        "pi": sp.pi, "E": sp.E, "I": sp.I # Constants (E is exp(1))
+        # Add other common functions if needed
+    }
+
+    try:
+        # Parse the expression using SymPy with the defined namespace
+        expr = sp.sympify(sympy_str, locals=sympy_namespace)
+
+        # Create a callable NumPy function using lambdify
+        # Using 'numpy' and 'sympy' modules allows lambdify to translate
+        # recognized SymPy functions to their NumPy equivalents.
+        f_callable = sp.lambdify(x_sym, expr, modules=['numpy', 'sympy'])
+
+        # Wrap the callable for evaluation error handling
+        def safe_f_callable(val):
             try:
-                # Provide a default y value (e.g., 0.0) as required by the parser's output
-                result = f_parsed(val, np.array([0.0])) 
-                # Handle potential list/array outputs from the parser
-                if isinstance(result, (list, np.ndarray)):
-                    return float(result[0]) if len(result) > 0 else np.nan
-                elif result is None:
-                    return np.nan
-                return float(result) # Ensure numeric output
-            except Exception as eval_error:
-                st.error(f"Error evaluating parsed function at {var}={val}: {str(eval_error)}")
-                return np.nan # Return NaN on evaluation error
-        return f_wrapped
-    except Exception as parse_error:
-        # Fallback to direct evaluation if ODE parser fails
-        st.warning(f"ODE parser failed: {str(parse_error)}. Using direct evaluation (eval). Be cautious.")
-        # Prepare string for eval (e.g., handle powers)
-        eval_str = func_string.replace('^', '**')
-        
-        def f_eval(val):
-            try:
-                # Define safe namespace for eval
-                math_funcs = {
-                    "np": np, var: val,
-                    "sin": np.sin, "cos": np.cos, "tan": np.tan,
-                    "exp": np.exp, "log": np.log, "ln": np.log, # Common log aliases
-                    "sqrt": np.sqrt, "pi": np.pi, "e": np.e
-                }
-                # Evaluate the expression within the safe namespace
-                result = eval(eval_str, {"__builtins__": {}}, math_funcs)
+                result = f_callable(val)
+                # Handle potential complex results if they arise and aren't desired
+                if isinstance(result, complex):
+                    # Check if the imaginary part is negligible
+                    if np.isclose(result.imag, 0):
+                        result = result.real
+                    else:
+                        st.warning(f"Function resulted in complex number ({result}) at {var}={val}. Returning NaN.")
+                        return np.nan
+                # Ensure output is float, handle potential NaNs from input domain issues
+                if result is None or np.isnan(result) or np.isinf(result):
+                     return np.nan
                 return float(result)
-            except Exception as direct_eval_error:
-                st.error(f"Error during direct evaluation at {var}={val}: {str(direct_eval_error)}")
-                return np.nan # Return NaN on evaluation error
-        return f_eval
+            except Exception as eval_err:
+                # Catch errors during the *evaluation* of the lambdified function
+                # Examples: division by zero, log of negative number, etc.
+                # st.warning(f"Evaluation error at {var}={val}: {eval_err}") # Optional: show eval warnings
+                return np.nan # Return NaN for points where function is undefined/errors
+
+        return safe_f_callable
+
+    except (sp.SympifyError, SyntaxError, TypeError) as parse_err:
+        # Catch errors during the *parsing* (sympify) step
+        st.error(f"Error parsing function '{func_string}': {parse_err}")
+        st.info(f"Check syntax (use '**' for power). Use '{var}' as the variable. Supported functions include: sin, cos, exp, log, sqrt, pi, E.")
+        return lambda val: np.nan # Return NaN function
+    except Exception as e:
+        # Catch any other unexpected errors during preparation
+        st.error(f"An unexpected error occurred preparing function: {e}")
+        return lambda val: np.nan # Return NaN function
+
 
 # Helper function for symbolic analysis (common pattern)
 def _perform_symbolic_analysis(func_string, method_type, numerical_result, **kwargs):
@@ -159,10 +246,25 @@ def create_integration_tab():
             ["Trapezoidal Rule", "Simpson's 1/3 Rule", "Simpson's 3/8 Rule", "Romberg Integration"],
             key="integration_method"
         )
-        integration_function = st.text_input(
-            "Function to integrate f(x)", value="x^2",
-            help="Enter a function of x, e.g., 'x^2', 'sin(x)', 'exp(-x)'",
-            key="integration_function"
+        
+        # --- Add LaTeX Preview for Integration Function ---
+        # Initialize state if key doesn't exist (st.text_input does this too, but explicit is safe)
+        if "integration_function" not in st.session_state:
+            st.session_state.integration_function = "x^2" # Default value from input below
+            
+        # Display LaTeX preview if function string is not empty
+        if st.session_state.integration_function:
+            latex_formula = convert_numerical_function_to_latex(st.session_state.integration_function, var='x')
+            st.markdown('<div class="latex-preview">', unsafe_allow_html=True)
+            st.latex(f"f(x) = {latex_formula}")
+            st.markdown('</div>', unsafe_allow_html=True)
+        # --- End LaTeX Preview ---
+            
+        integration_function_value = st.text_area(
+            "Function to integrate f(x)", 
+            help="Enter a function of x (e.g., x^2, sin(x), exp(-x)). Press Ctrl+Enter to apply.",
+            key="integration_function", # Use key for state management
+            height=68 # Set a reasonable height for potentially single-line input
         )
         a_value = st.number_input("Lower bound (a)", value=0.0, step=0.1, format="%.2f", key="integration_a")
         b_value = st.number_input("Upper bound (b)", value=1.0, step=0.1, format="%.2f", key="integration_b")
@@ -182,12 +284,12 @@ def create_integration_tab():
     with col2:
         st.markdown("### Results")
         if compute_integral:
-            if not integration_function:
+            if not st.session_state.integration_function:
                 st.error("Please enter a function to integrate.")
                 return
             
-            # Prepare the function
-            f_callable = _prepare_function(integration_function, var='x')
+            # Prepare the function using the value from session state
+            f_callable = _prepare_function(st.session_state.integration_function, var='x')
             
             # Check if function preparation failed (indicated by returning None or similar)
             # For now, assume it works or _prepare_function shows error and returns NaN-producing func
@@ -229,7 +331,7 @@ def create_integration_tab():
                 # Filter NaNs for plotting
                 valid_mask = ~np.isnan(y_points)
                 if np.any(valid_mask):
-                     ax.plot(x_points[valid_mask], y_points[valid_mask], 'b-', label=f'f(x) = {integration_function}')
+                     ax.plot(x_points[valid_mask], y_points[valid_mask], 'b-', label=f'f(x) = {st.session_state.integration_function}')
                      ax.fill_between(x_points[valid_mask], y_points[valid_mask], alpha=0.2, color='b')
                 else:
                     st.warning("Could not plot function (all points resulted in errors or NaN).")
@@ -256,7 +358,7 @@ def create_integration_tab():
                 # Conditionally perform symbolic analysis
                 if show_symbolic:
                      _perform_symbolic_analysis(
-                         integration_function, 
+                         st.session_state.integration_function, 
                          'integration', 
                          result, 
                          a_value=a_value, 
@@ -281,10 +383,25 @@ def create_differentiation_tab():
             ["Forward Difference", "Backward Difference", "Central Difference", "Second Derivative"],
             key="differentiation_method"
         )
-        differentiation_function = st.text_input(
-            "Function to differentiate f(x)", value="sin(x)",
-            help="Enter a function of x, e.g., 'x^2', 'sin(x)', 'exp(x)'",
-            key="differentiation_function"
+        
+        # --- Add LaTeX Preview for Differentiation Function ---
+        # Initialize state if key doesn't exist
+        if "differentiation_function" not in st.session_state:
+            st.session_state.differentiation_function = "sin(x)" # Default value from input below
+            
+        # Display LaTeX preview if function string is not empty
+        if st.session_state.differentiation_function:
+            latex_formula = convert_numerical_function_to_latex(st.session_state.differentiation_function, var='x')
+            st.markdown('<div class="latex-preview">', unsafe_allow_html=True)
+            st.latex(f"f(x) = {latex_formula}")
+            st.markdown('</div>', unsafe_allow_html=True)
+        # --- End LaTeX Preview ---
+            
+        differentiation_function_value = st.text_area(
+            "Function to differentiate f(x)", 
+            help="Enter a function of x (e.g., x^2, sin(x), exp(x)). Press Ctrl+Enter to apply.",
+            key="differentiation_function", # Use key for state management
+            height=68 # Set a reasonable height
         )
         x_value = st.number_input("Point to evaluate at (x)", value=1.0, step=0.1, format="%.4f", key="differentiation_x")
         h_value = st.number_input("Step size (h)", value=1e-5, min_value=1e-10, max_value=0.1, format="%.2e", key="differentiation_h")
@@ -297,11 +414,11 @@ def create_differentiation_tab():
     with col2:
         st.markdown("### Results")
         if compute_derivative:
-            if not differentiation_function:
+            if not st.session_state.differentiation_function:
                 st.error("Please enter a function to differentiate.")
                 return
 
-            f_callable = _prepare_function(differentiation_function, var='x')
+            f_callable = _prepare_function(st.session_state.differentiation_function, var='x')
 
             start_time = time.time()
             result, formula = None, ""
@@ -337,7 +454,7 @@ def create_differentiation_tab():
                 
                 valid_mask = ~np.isnan(y_points)
                 if np.any(valid_mask):
-                    ax.plot(x_points[valid_mask], y_points[valid_mask], 'b-', label=f'f(x) = {differentiation_function}')
+                    ax.plot(x_points[valid_mask], y_points[valid_mask], 'b-', label=f'f(x) = {st.session_state.differentiation_function}')
                     
                     # Plot tangent/secant lines (check points exist and are valid)
                     try:
@@ -371,7 +488,7 @@ def create_differentiation_tab():
                 # Conditionally perform symbolic analysis
                 if show_symbolic:
                     _perform_symbolic_analysis(
-                        differentiation_function, 
+                        st.session_state.differentiation_function, 
                         'differentiation', 
                         result, 
                         x_value=x_value,

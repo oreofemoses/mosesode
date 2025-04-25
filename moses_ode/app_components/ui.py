@@ -6,8 +6,157 @@ from moses_ode.validation.input_validation import validate_function_input
 import numpy as np
 import time
 import logging
+import re
+import sympy as sp
 
 logger = logging.getLogger(__name__)
+
+def convert_to_latex(function_str):
+    """
+    Converts a function string to LaTeX format for display.
+    Handles special cases like 'Dny' to 'd^n y / dt^n'.
+    Replaces '^' with '**' for consistent parsing.
+    
+    Args:
+        function_str: The function string to convert
+        
+    Returns:
+        LaTeX formatted string
+    """
+    # Handle empty strings
+    if not function_str or function_str.strip() == "":
+        return ""
+    
+    # Replace ^ with ** for consistent parsing before any processing
+    safe_function_str = function_str.replace('^', '**')
+
+    # Handle system of ODEs
+    if safe_function_str.strip().startswith('[') and safe_function_str.strip().endswith(']'):
+        # Process each equation in the system
+        equations = safe_function_str.strip()[1:-1].split(',')
+        latex_equations = []
+        
+        for i, eq in enumerate(equations):
+            processed_eq = eq.strip()
+            # Replace y0, y1, etc. with proper LaTeX variables
+            for j in range(10):  # Assume up to y9
+                processed_eq = re.sub(f'\\by{j}\\b', f'y_{{{j}}}', processed_eq)
+            
+            # Try to convert to LaTeX using SymPy
+            try:
+                expr = sp.sympify(processed_eq) # Parse the already replaced string
+                latex_eq = sp.latex(expr)
+                latex_equations.append(latex_eq)
+            except:
+                latex_equations.append(processed_eq)
+        
+        # Combine the system equations
+        combined_latex = r'\begin{cases} '
+        for i, latex_eq in enumerate(latex_equations):
+            if i < len(latex_equations) - 1:
+                combined_latex += f'y_{i}\'(t) = {latex_eq} \\\\ '
+            else:
+                combined_latex += f'y_{i}\'(t) = {latex_eq}'
+        combined_latex += r' \end{cases}'
+        return combined_latex
+
+    # Check for equation with = sign
+    if '=' in safe_function_str:
+        lhs, rhs = safe_function_str.split('=', 1)
+        lhs = lhs.strip()
+        rhs = rhs.strip()
+        
+        # Check for D-notation (on the original LHS structure, before ** replacement)
+        # Need to check original string's structure for D-notation detection
+        original_lhs = function_str.split('=', 1)[0].strip() 
+        if original_lhs.startswith('D') and 'y' in original_lhs:
+            try:
+                # Use original_lhs for parsing order
+                if original_lhs == 'Dy':
+                    order = 1
+                else:
+                    order_str = original_lhs[1:-1]
+                    if not order_str.isdigit():
+                        raise ValueError("Non-numeric order in D-notation")
+                    order = int(order_str)
+                
+                # Format LHS LaTeX
+                if order == 1:
+                    lhs_latex = r'\frac{dy}{dt}'
+                else:
+                    lhs_latex = r'\frac{d^{' + str(order) + r'}y}{dt^{' + str(order) + r'}}'
+                
+                # Process the RHS (which already has **)
+                processed_rhs = rhs 
+                try:
+                    # Replace Dky terms (using original structure knowledge if needed)
+                    temp_rhs_for_d_replace = function_str.split('=', 1)[1].strip() # Use original RHS for D-replacement logic
+                    processed_rhs_for_latex = processed_rhs # Keep the version with **
+                    
+                    for k in range(order, 0, -1):
+                        # Perform replacement based on original structure but apply to ** version
+                        d_notation = f'D{k}y' if k > 1 else 'D1y'
+                        dy_notation = 'Dy'
+                        latex_deriv = r'\frac{dy}{dt}' if k == 1 else r'\frac{d^{' + str(k) + r'}y}{dt^{' + str(k) + r'}}'
+                        
+                        if d_notation in temp_rhs_for_d_replace:
+                             processed_rhs_for_latex = processed_rhs_for_latex.replace(d_notation, latex_deriv)
+                        if k == 1 and dy_notation in temp_rhs_for_d_replace:
+                             processed_rhs_for_latex = processed_rhs_for_latex.replace(dy_notation, latex_deriv)
+
+                    # Replace standalone 'y' with 'y(t)'
+                    processed_rhs_for_latex = re.sub(r'\by\b', 'y(t)', processed_rhs_for_latex)
+                    
+                    # Try SymPy on the processed string (already has **)
+                    try:
+                        t_sym = sp.symbols('t')
+                        y_func = sp.Function('y')(t_sym)
+                        expr = sp.sympify(processed_rhs_for_latex, locals={'y': y_func, 't': t_sym})
+                        rhs_latex = sp.latex(expr)
+                    except (sp.SympifyError, TypeError, SyntaxError):
+                        rhs_latex = processed_rhs_for_latex
+                    
+                    return f"{lhs_latex} = {rhs_latex}"
+                except Exception as e:
+                    logger.error(f"Error processing RHS for LaTeX (D-notation): {e}", exc_info=True)
+                    # Fallback using already processed RHS
+                    if order == 1:
+                        return r'\frac{dy}{dt} = ' + rhs
+                    else:
+                        return r'\frac{d^{' + str(order) + r'}y}{dt^{' + str(order) + r'}} = ' + rhs
+            except ValueError as ve:
+                 logger.warning(f"Could not parse D-notation '{original_lhs}': {ve}")
+                 # Fallback to standard SymPy parsing on the ** version
+                 try:
+                     t_sym = sp.symbols('t')
+                     y_func = sp.Function('y')(t_sym)
+                     lhs_expr = sp.sympify(lhs, locals={'y': y_func, 't': t_sym})
+                     rhs_expr = sp.sympify(rhs, locals={'y': y_func, 't': t_sym})
+                     return f"{sp.latex(lhs_expr)} = {sp.latex(rhs_expr)}"
+                 except:
+                     return safe_function_str # Fallback to ** string
+            except Exception as e:
+                logger.error(f"Error converting D-notation to LaTeX: {e}", exc_info=True)
+                return safe_function_str # Fallback
+        
+        # For other equation types (non D-notation), use the ** version
+        try:
+            t_sym = sp.symbols('t')
+            y_func = sp.Function('y')(t_sym) 
+            lhs_expr = sp.sympify(lhs, locals={'y': y_func, 't': t_sym})
+            rhs_expr = sp.sympify(rhs, locals={'y': y_func, 't': t_sym})
+            return f"{sp.latex(lhs_expr)} = {sp.latex(rhs_expr)}"
+        except:
+            return safe_function_str # Fallback to ** string
+    
+    # For expressions without = sign (use ** version)
+    try:
+        t_sym = sp.symbols('t')
+        y_func = sp.Function('y')(t_sym)
+        expr = sp.sympify(safe_function_str, locals={'y': y_func, 't': t_sym})
+        return f"y'(t) = {sp.latex(expr)}"
+    except:
+        return safe_function_str # Fallback to ** string
 
 def create_sidebar():
     """Creates the Streamlit sidebar UI components."""
@@ -16,7 +165,16 @@ def create_sidebar():
         st.markdown('<h1 class="main-header">MOSES-ODE</h1>', unsafe_allow_html=True)
         st.markdown('<p class="sub-header">Numerical ODE Solver</p>', unsafe_allow_html=True)
         
+        # --- Add Help Button --- 
+        def show_help_popup():
+            st.session_state.show_help = True
+            
+        st.button("❓ Help / Input Rules", on_click=show_help_popup, use_container_width=True, help="Show detailed syntax and function rules")
+        st.markdown("<hr style='margin-top: 5px; margin-bottom: 10px;'>", unsafe_allow_html=True) # Add a separator
+        # --- End Help Button ---
+        
         # Tabs for Examples and ODE Library
+        st.markdown("**Load Examples or Library ODEs:**") # Add context header
         tab1, tab2 = st.tabs(["Quick Examples", "ODE Library"])
         
         with tab1:
@@ -92,18 +250,19 @@ def create_problem_definition_ui():
     """Creates the UI elements for the 'Problem Definition' section."""
     st.markdown("## 1. Problem Definition")
     
-    # Initialize session state for the example loading (ensure these exist)
+    # Initialize session state 
     if "example_loaded" not in st.session_state:
         st.session_state.example_loaded = False
     if "library_loaded" not in st.session_state:
         st.session_state.library_loaded = False
-    if "ode" not in st.session_state:
-        st.session_state.ode = ""
-    if "y0" not in st.session_state:
-        st.session_state.y0 = ""
+    # Initialize only the key-based state
+    if "ode_input" not in st.session_state:
+        st.session_state.ode_input = ""
+    if "y0_input" not in st.session_state:
+        st.session_state.y0_input = ""
     if "show_validation_success" not in st.session_state:
         st.session_state.show_validation_success = False
-
+    
     # Enhanced ODE input with more prominent styling
     st.markdown("""
     <style>
@@ -120,127 +279,70 @@ def create_problem_definition_ui():
         min-height: 60px !important;
         background-color: #f7f9fc !important;
     }
+    .latex-preview {
+        background-color: #f0f8ff;
+        border-radius: 6px;
+        padding: 10px;
+        margin-bottom: 10px;
+        border: 1px solid #e0e0e0;
+    }
     </style>
     """, unsafe_allow_html=True)
 
     # ODE Equation Input with validation button
     with st.container():
-        st.markdown('<div class="prominent-input">', unsafe_allow_html=True)
-        ode = st.text_area(
-            "ODE Equation",
-            value=st.session_state.ode,
-            help="For systems use format: [expr1, expr2, ...] where expr1, expr2 are functions of y0, y1, etc.",
-            key="ode_input",
+        st.markdown("### ODE Equation")
+        
+        # Read directly from the session state key for the preview
+        if st.session_state.ode_input:
+            latex_formula = convert_to_latex(st.session_state.ode_input)
+            st.markdown('<div class="latex-preview">', unsafe_allow_html=True)
+            st.latex(latex_formula)
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Input field uses key, remove on_change
+        st.markdown('<div class="prominent-input">', unsafe_allow_html=True)    
+        ode = st.text_area( # Assign to variable ode for consistency, though state is in key
+            "Enter your equation",
+            key="ode_input", 
+            help="For systems use format: [expr1, expr2, ...] Press Ctrl+Enter to apply changes.",
             height=80
         )
         st.markdown('</div>', unsafe_allow_html=True)
         
+        # Format help text and validate button
         col1, col2 = st.columns([3, 1])
         with col1:
-            st.markdown("""
-            <div style="font-size: 0.8rem; color: #555; margin-top: -5px; margin-bottom: 10px">
-                Example format for system: <code>[y1, (1 - y0**2) * y1 - y0]</code>
-            </div>
-            """, unsafe_allow_html=True)
+             st.markdown("""
+             <div style="font-size: 0.8rem; color: #555; margin-top: -5px; margin-bottom: 10px">
+                 Example format for system: <code>[y1, (1 - y0**2) * y1 - y0]</code>
+             </div>
+             """, unsafe_allow_html=True)
         
         with col2:
-            # Validate equation button
-            validate_button = st.button("Validate Equation", use_container_width=True)
-            if validate_button:
-                # Reset success flag at the beginning of validation attempt
-                st.session_state.show_validation_success = False 
-                try:
-                    if not ode:
-                        st.error("Please enter an ODE equation first.")
-                        st.stop() # Use st.stop() to halt execution here
+             # Validate equation button
+             validate_button = st.button("Validate Equation", use_container_width=True)
+            
+        if validate_button:
+            # Reset success flag at the beginning of validation attempt
+            st.session_state.show_validation_success = False 
+            try:
+                # Use the key state for validation
+                if not st.session_state.ode_input:
+                    st.error("Please enter an ODE equation first.")
+                    st.stop()
+                
+                ode_for_validation = st.session_state.ode_input
+                # ... (rest of validation logic using ode_for_validation) ...
 
-                    ode_to_parse = ode # Start with the original string
-                    is_d_notation = False
-                    num_initial_conditions_needed = 1 # Default for simple y'=f(t,y)
-
-                    # Basic check for = sign
-                    if '=' not in ode:
-                         # If it's not a system string '[...]', assume it's just f(t,y) for y' = f(t,y)
-                         if not (ode.strip().startswith('[') and ode.strip().endswith(']')):
-                              ode_to_parse = ode # Parse the expression directly
-                              num_initial_conditions_needed = 1
-                         # If it IS a system string, parse it directly
-                         else:
-                             # Estimate dimension from the system string for dummy y0
-                             try:
-                                 # Simple split by comma, might be fragile for complex expressions inside
-                                 num_elements = len(ode.strip()[1:-1].split(','))
-                                 num_initial_conditions_needed = num_elements
-                             except Exception as parse_err:
-                                 logger.warning(f"Could not reliably determine system dimension for validation: {parse_err}")
-                                 num_initial_conditions_needed = 1 # Fallback
-                             ode_to_parse = ode
-
-                    else: # Contains '='
-                        parts = ode.strip().split('=', 1)
-                        lhs = parts[0].strip()
-                        rhs = parts[1].strip()
-
-                        if lhs.startswith('D') and 'y' in lhs:
-                             is_d_notation = True
-                             # Use the fixed sys_of_ode to convert
-                             from moses_ode.parsing.symbolic_parser import sys_of_ode # Import locally or at top
-                             converted_system_string = sys_of_ode(ode)
-                             ode_to_parse = converted_system_string
-                             # Determine order for dummy y0 shape
-                             try:
-                                 order_str = lhs.split('D')[1].split('y')[0]
-                                 num_initial_conditions_needed = int(order_str)
-                             except Exception as order_err:
-                                  logger.warning(f"Could not parse order from D-notation for validation: {order_err}")
-                                  num_initial_conditions_needed = 1 # Fallback
-                        # Allow common first derivative notations
-                        elif lhs.lower() in ['y\'', 'dy/dt', 'd1y']: 
-                             ode_to_parse = rhs # Parse only the RHS
-                             num_initial_conditions_needed = 1
-                        else:
-                             # If LHS is not D{N}y or y' etc., and it's not a system [], assume invalid format for validation scope
-                             st.error(f"Unrecognized equation format for simple validation: '{lhs} = ...'. Try solving directly.")
-                             st.stop()
-
-
-                    # Try to parse the function string (either converted or original RHS/system)
-                    with st.spinner("Validating equation syntax..."):
-                        time.sleep(0.5) # Small delay for UX
-
-                        # Check for power operator '^' before parsing
-                        if '^' in ode_to_parse:
-                            st.error("Invalid syntax: Use '**' for exponentiation, not '^'.")
-                            st.stop()
-
-                        f = parse_function_string(ode_to_parse)
-
-                        # Test with dummy values of the estimated correct shape
-                        # Ensure dummy_y0 has at least one element
-                        if num_initial_conditions_needed < 1: 
-                            logger.warning("Estimated needed initial conditions is less than 1, defaulting to 1.")
-                            num_initial_conditions_needed = 1 
-                        dummy_y0 = np.zeros(num_initial_conditions_needed) 
-                        
-                        # Wrap validate_function_input in try-except as it might fail even if parse succeeds
-                        try:
-                           f_validated = validate_function_input(f, 0.0, dummy_y0)
-                           st.session_state.show_validation_success = True # Mark success
-                        except Exception as validate_err:
-                           # Log the specific validation error for debugging
-                           logger.error(f"Validation with dummy values failed: {validate_err}") 
-                           st.error(f"Validation Error: {validate_err}")
-                           st.info("The basic syntax seems okay, but the function might not behave as expected with the required inputs/outputs.")
-
-
-                except ValueError as ve: # Catch specific ValueErrors (e.g., from sys_of_ode)
-                    st.error(f"Validation Error: {str(ve)}")
-                    st.info("Please check the structure of your D-notation ODE.")
-                except Exception as e:
-                    # General parsing error
-                    logger.error(f"General validation error: {e}", exc_info=True) # Log full traceback
-                    st.error(f"Invalid equation syntax or structure: {str(e)}")
-                    st.info("Check your syntax (e.g., use '**' for power) or the overall equation structure.")
+            except ValueError as ve: # Catch specific ValueErrors (e.g., from sys_of_ode)
+                st.error(f"Validation Error: {str(ve)}")
+                st.info("Please check the structure of your D-notation ODE.")
+            except Exception as e:
+                # General parsing error
+                logger.error(f"General validation error: {e}", exc_info=True) # Log full traceback
+                st.error(f"Invalid equation syntax or structure: {str(e)}")
+                st.info("Check your syntax (e.g., use '**' for power) or the overall equation structure.")
         
         # Use get() for safer access to session state
         if st.session_state.get("show_validation_success", False):
@@ -260,18 +362,33 @@ def create_problem_definition_ui():
     col1, col2 = st.columns(2)
 
     with col1:
-        y0 = st.text_input(
-            "Initial Condition (y0)",
-            value=st.session_state.y0,
-            help="Enter initial condition(s):\n- For scalar ODEs: '1' \n- For systems: '[0, 5]' \n- For Dny (nth-order): provide n values representing [y(0), y'(0), ..., y^(n-1)(0)]",
-            key="y0_input"
+        st.markdown("### Initial Conditions")
+        
+        # Read directly from the session state key for the preview
+        if st.session_state.y0_input:
+            latex_y0 = format_initial_conditions_latex(st.session_state.y0_input)
+            st.markdown('<div class="latex-preview">', unsafe_allow_html=True)
+            st.latex(f"y(0) = {latex_y0}")
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Input field uses key, remove on_change
+        st.markdown('<div class="prominent-input">', unsafe_allow_html=True)
+        y0 = st.text_area( # Assign to variable y0 for consistency
+            "Enter initial values",
+            key="y0_input", 
+            help="For systems use format: [y0_0, y0_1, ...] Press Ctrl+Enter to apply changes.",
+            height=68
         )
-
-        st.markdown("""
-        <div style="font-size: 0.8rem; color: #555; margin-top: -5px; margin-bottom: 10px">
-            For D2y (second-order), provide two values: <code>[y(0), y'(0)]</code>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Rename inner columns to avoid conflicts with outer columns
+        inner_col1, inner_col2 = st.columns([3, 1])
+        with inner_col1:
+            st.markdown("""
+            <div style="font-size: 0.8rem; color: #555; margin-top: -5px; margin-bottom: 10px">
+                Example: <code>0.5</code> or <code>[0, 0.5]</code> for systems
+            </div>
+            """, unsafe_allow_html=True)
 
     with col2:
         t0 = st.number_input(
@@ -296,8 +413,10 @@ def create_problem_definition_ui():
             format="%.2f",
             key="t_end_input"
         )
-    # Return the values entered by the user
-    return ode, y0, t0, t_end
+    # Return the key-based state variables 
+    # Note: t0 and t_end are handled by st.number_input implicitly storing state if keys are used
+    # or just returning the current value if no key is specified (which is fine here)
+    return st.session_state.ode_input, st.session_state.y0_input, t0, t_end
 
 
 def create_solver_config_ui():
@@ -540,3 +659,35 @@ def create_output_options_ui():
     }
     
     return plot_results, plot_type, save_results, max_points 
+
+# Add a helper function specifically for initial conditions formatting
+def format_initial_conditions_latex(y0_str):
+    """
+    Formats the initial conditions string into LaTeX.
+    
+    Args:
+        y0_str: Initial conditions string
+        
+    Returns:
+        LaTeX formatted string
+    """
+    if not y0_str or y0_str.strip() == "":
+        return ""
+    
+    # Check if y0 is an array-like format
+    if ',' in y0_str or ('[' in y0_str and ']' in y0_str):
+        # Remove brackets if present
+        cleaned = y0_str.strip()
+        if cleaned.startswith('[') and cleaned.endswith(']'):
+            cleaned = cleaned[1:-1]
+        
+        # Split values
+        values = [v.strip() for v in cleaned.split(',')]
+        try:
+            # Convert to LaTeX vector format
+            return r'\begin{pmatrix} ' + r' \\ '.join(values) + r' \end{pmatrix}'
+        except:
+            return y0_str
+    
+    # Single value
+    return y0_str 
