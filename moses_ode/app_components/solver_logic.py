@@ -35,21 +35,50 @@ def solve_ode(ode, y0_str, t0, t_end, solver="rk45", h=0.1, tol=1e-6, status_cal
     is_system = False
     expected_y0_dim = 1 # Default for simple ODEs
     try:
-        if 'D' in ode:
+        # Check if input is already a system in list format
+        ode_stripped = ode.strip()
+        if ode_stripped.startswith('[') and ode_stripped.endswith(']'):
             if status_callback:
-                status_callback("Parsing system of ODEs...", 30)
-            sys_output_str = sys_of_ode(ode)
-            # Determine expected dimension from the system output string
-            # Count elements in the list representation (e.g., len("[y1, -9.81]".strip('[]').split(',')))
-            expected_y0_dim = len([item for item in sys_output_str.strip('[]').split(',') if item.strip()])
-            f = parse_function_string(sys_output_str)
+                status_callback("Parsing system of ODEs (list format)...", 30)
+            # Count elements in the provided list string
+            try:
+                # Use json.loads to parse the list structure first
+                parsed_list = json.loads(ode_stripped)
+                if isinstance(parsed_list, list):
+                     expected_y0_dim = len(parsed_list)
+                else: # Handle case where input is like '[scalar]'
+                     expected_y0_dim = 1 
+            except json.JSONDecodeError as json_err:
+                # Fallback: simple comma splitting if JSON fails (less robust)
+                print(f"Warning: JSON parsing failed for list input ({json_err}). Falling back to comma split.")
+                expected_y0_dim = len([item for item in ode_stripped.strip('[]').split(',') if item.strip()])
+
+            f = parse_function_string(ode_stripped) # Parse the original list string
             is_system = True
-        else:
+        elif 'D' in ode: # Check for D-notation if not a list
+            if status_callback:
+                status_callback("Parsing system of ODEs (D-notation)...", 30)
+            sys_output_str = sys_of_ode(ode)
+            # Determine expected dimension from the CONVERTED system output string
+            try:
+                 # Use json.loads to parse the list structure first
+                 parsed_list = json.loads(sys_output_str)
+                 if isinstance(parsed_list, list):
+                      expected_y0_dim = len(parsed_list)
+                 else: # Handle case where input is like '[scalar]'
+                      expected_y0_dim = 1
+            except json.JSONDecodeError as json_err:
+                 # Fallback: simple comma splitting if JSON fails (less robust)
+                 print(f"Warning: JSON parsing failed for D-notation output ({json_err}). Falling back to comma split.")
+                 expected_y0_dim = len([item for item in sys_output_str.strip('[]').split(',') if item.strip()])
+            
+            f = parse_function_string(sys_output_str) # Parse the converted string
+            is_system = True
+        else: # Otherwise, assume it's a simple scalar ODE f(t,y) for y'=f(t,y)
             if status_callback:
                 status_callback("Parsing single ODE...", 30)
-            # For simple ODEs, the system has 1 dimension
             expected_y0_dim = 1 
-            f = parse_function_string(ode)
+            f = parse_function_string(ode) # Parse the expression directly
     except Exception as e:
         raise ValueError(f"Error parsing ODE function: {str(e)}") from e
         
