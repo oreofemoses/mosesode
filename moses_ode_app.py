@@ -3,6 +3,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import time
+import os
+import sys
 from moses_ode.parsing.function_parser import parse_function_string
 from moses_ode.parsing.symbolic_parser import sys_of_ode
 from moses_ode.validation.input_validation import validate_function_input
@@ -24,6 +26,39 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# DEBUGGING SECTION - Remove after troubleshooting
+st.markdown("### DEBUG INFO")
+st.write(f"Current working directory: {os.getcwd()}")
+st.write(f"Python path: {sys.path}")
+try:
+    st.write(f"Files in current directory: {os.listdir()}")
+except Exception as e:
+    st.write(f"Error listing current directory: {str(e)}")
+
+try:
+    import moses_ode
+    st.write(f"moses_ode package location: {moses_ode.__file__}")
+    
+    if 'moses_ode/app_components' in os.listdir():
+        st.write(f"Files in app_components: {os.listdir('moses_ode/app_components')}")
+    
+    # Check if constants.py exists and its content
+    constants_path = os.path.join(os.path.dirname(moses_ode.__file__), 'app_components', 'constants.py')
+    st.write(f"Constants file path: {constants_path}")
+    st.write(f"Constants file exists: {os.path.exists(constants_path)}")
+    
+    if os.path.exists(constants_path):
+        with open(constants_path, 'r') as f:
+            st.code(f.read(), language='python')
+except Exception as e:
+    st.write(f"Error inspecting moses_ode package: {str(e)}")
+
+# Check ODE_LIBRARY content
+st.write(f"ODE_LIBRARY type: {type(ODE_LIBRARY)}")
+st.write(f"ODE_LIBRARY content: {ODE_LIBRARY}")
+st.markdown("### END DEBUG INFO")
+# END DEBUGGING SECTION
 
 # Apply custom CSS
 st.markdown("""
