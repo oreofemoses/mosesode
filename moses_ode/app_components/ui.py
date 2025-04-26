@@ -189,11 +189,14 @@ def create_sidebar():
             # Use a more descriptive button label
             if st.button("Load Example", key="load_example_btn", use_container_width=True):
                 example_data = EXAMPLE_ODES[selected_example]
-                st.session_state.ode = example_data["ode"]
-                st.session_state.y0 = example_data["y0"]
-                # Optionally load t_end if defined in EXAMPLE_ODES, provide default
+                # --- Update the correct session state keys linked to input widgets ---
+                st.session_state.ode_input = example_data["ode"]
+                st.session_state.y0_input = example_data["y0"]
+                # t_end uses the value correctly, so keep updating st.session_state.t_end
                 st.session_state.t_end = example_data.get("t_end", 10.0) 
                 st.session_state.example_loaded = True # Flag to indicate load
+                # Trigger a rerun to ensure input widgets refresh immediately
+                st.rerun()
 
         
         with tab2:
@@ -218,10 +221,14 @@ def create_sidebar():
             st.caption(f"**t_end:** {ode_details.get('t_end', 'N/A')}")
 
             if st.button("Load from Library", key="load_library_btn", use_container_width=True):
-                 st.session_state.ode = ode_details["ode"]
-                 st.session_state.y0 = ode_details["y0"]
-                 st.session_state.t_end = ode_details.get("t_end", 10.0) # Default t_end if not specified
-                 st.session_state.example_loaded = True # Flag to indicate load
+                 # --- Update the correct session state keys linked to input widgets ---
+                 st.session_state.ode_input = ode_details["ode"]
+                 st.session_state.y0_input = ode_details["y0"]
+                 # t_end uses the value correctly, so keep updating st.session_state.t_end
+                 st.session_state.t_end = ode_details.get("t_end", 10.0) 
+                 st.session_state.library_loaded = True # Flag to indicate load
+                 # Trigger a rerun to ensure input widgets refresh immediately
+                 st.rerun()
 
         # Add a divider
         st.markdown("<hr class='divider'>", unsafe_allow_html=True)
@@ -423,22 +430,68 @@ def create_problem_definition_ui():
         st.info("Library ODE loaded. See details in sidebar.")
         st.session_state.library_loaded = False  # Reset flag
 
+    # --- Detect ODE Format for y0 Preview --- 
+    ode_input_val = st.session_state.get('ode_input', '').strip()
+    ode_format = 'scalar' # Default
+    ode_order = 1        # Default
+    if '=' not in ode_input_val:
+        if ode_input_val.startswith('[') and ode_input_val.endswith(']'):
+            ode_format = 'system'
+            try: # Estimate dimension
+                ode_order = max(1, len(ode_input_val[1:-1].split(',')))
+            except: ode_order = 1
+        else: 
+            ode_format = 'scalar' # Simple expression y'=f(t,y)
+            ode_order = 1
+    else:
+        lhs = ode_input_val.split('=', 1)[0].strip()
+        if lhs.startswith('D') and 'y' in lhs:
+            ode_format = 'd_notation'
+            try: # Determine order
+                if lhs == 'Dy': ode_order = 1
+                elif lhs[1:-1].isdigit(): ode_order = int(lhs[1:-1])
+                else: ode_order = 1 # Fallback if format weird e.g. Dt y
+            except: ode_order = 1 
+        elif lhs.lower() in ['y\'', 'dy/dt', 'd1y']:
+            ode_format = 'scalar' # Explicit first order
+            ode_order = 1
+        # else: # Unknown format, treat as scalar maybe? Handled by default.
+            
     # Display other inputs in a standard 2-column layout
     col1, col2 = st.columns(2)
 
     with col1:
         st.markdown("### Initial Conditions")
         
-        # Read directly from the session state key for the preview
-        if st.session_state.y0_input:
-            latex_y0 = format_initial_conditions_latex(st.session_state.y0_input)
+        # --- Display Context-Aware y0 Preview (Moved Here - Before Input) --- 
+        y0_input_val = st.session_state.get("y0_input", "")
+        if y0_input_val: # Only show preview if there's input
+            current_t0 = st.session_state.get("t0_input", 0.0) # Read t0 state
+            y0_values, basic_latex_val = _parse_y0_input(y0_input_val)
+            final_latex = ""
+
+            if ode_format == 'd_notation' and len(y0_values) == ode_order:
+                cases = []
+                for i, val in enumerate(y0_values):
+                    deriv_latex = _format_derivative_latex(i, current_t0)
+                    cases.append(f"{deriv_latex} = {val}")
+                final_latex = r'\begin{cases} ' + r' \\ '.join(cases) + r' \end{cases}'
+            elif ode_format == 'system' and len(y0_values) == ode_order: 
+                cases = []
+                for i, val in enumerate(y0_values):
+                    cases.append(f"y_{{{i}}}({current_t0}) = {val}") 
+                final_latex = r'\begin{cases} ' + r' \\ '.join(cases) + r' \end{cases}'
+            else: 
+                final_latex = f"y({current_t0}) = {basic_latex_val}"
+
             st.markdown('<div class="latex-preview">', unsafe_allow_html=True)
-            st.latex(f"y(0) = {latex_y0}")
+            st.latex(final_latex)
             st.markdown('</div>', unsafe_allow_html=True)
-        
-        # Input field uses key, remove on_change
+        # --- End Preview ---
+            
+        # Input field (Now after preview)
         st.markdown('<div class="prominent-input">', unsafe_allow_html=True)
-        y0 = st.text_area( # Assign to variable y0 for consistency
+        y0_text = st.text_area(
             "Enter initial values",
             key="y0_input", 
             help="For systems use format: [y0_0, y0_1, ...] Press Ctrl+Enter to apply changes.",
@@ -446,41 +499,38 @@ def create_problem_definition_ui():
         )
         st.markdown('</div>', unsafe_allow_html=True)
         
-        # Rename inner columns to avoid conflicts with outer columns
+        # Help text for y0 (Remains after input)
         inner_col1, inner_col2 = st.columns([3, 1])
         with inner_col1:
             st.markdown("""
             <div style="font-size: 0.8rem; color: #555; margin-top: -5px; margin-bottom: 10px">
-                Example: <code>0.5</code> or <code>[0, 0.5]</code> for systems
+                Example: <code>0.5</code> (scalar) or <code>[1, 0]</code> (D2y=...) or <code>[3.14, 0]</code> (system)
             </div>
             """, unsafe_allow_html=True)
 
     with col2:
+        # Define t0 input (no change here, state is read above)
         t0 = st.number_input(
             "Initial Time (t0)",
             value=0.0,
             help="Starting time for the simulation",
             step=0.1,
             format="%.2f",
-            key="t0_input"
+            key="t0_input" 
         )
-
-        # Initialize t_end session state if not present
-        if "t_end" not in st.session_state:
-            st.session_state.t_end = 10.0
-
+        # ... (t_end input remains the same) ...
+        t_end_min_value = float(st.session_state.get("t0_input", 0.0) + 0.1)
         t_end = st.number_input(
             "End Time (t_end)",
-            value=float(st.session_state.t_end),  # Ensure it's float
-            min_value=float(t0 + 0.1),  # Ensure it's float
+            value=float(st.session_state.t_end), 
+            min_value=t_end_min_value, 
             help="Ending time for the simulation",
             step=1.0,
             format="%.2f",
             key="t_end_input"
         )
+
     # Return the key-based state variables 
-    # Note: t0 and t_end are handled by st.number_input implicitly storing state if keys are used
-    # or just returning the current value if no key is specified (which is fine here)
     return st.session_state.ode_input, st.session_state.y0_input, t0, t_end
 
 
@@ -725,34 +775,66 @@ def create_output_options_ui():
     
     return plot_results, plot_type, save_results, max_points 
 
-# Add a helper function specifically for initial conditions formatting
-def format_initial_conditions_latex(y0_str):
+# Add helper for derivative LaTeX
+def _format_derivative_latex(order, var_value):
+    """Generates LaTeX string for y^(order)(var_value)."""
+    if order == 0:
+        return f"y({var_value})"
+    elif order == 1:
+        return f"y'({var_value})"
+    else:
+        return f"y^{{({order})}}({var_value})" # Using y^{(n)}(t) notation
+
+# Refactor initial conditions parser/formatter
+def _parse_y0_input(y0_str):
     """
-    Formats the initial conditions string into LaTeX.
+    Parses the initial conditions string into a list of value strings.
+    Also returns a basic LaTeX formatted version of the value(s).
     
     Args:
         y0_str: Initial conditions string
         
     Returns:
-        LaTeX formatted string
+        Tuple: (list_of_value_strings, basic_latex_value_format)
+               Returns (None, y0_str) if parsing fails significantly.
     """
-    if not y0_str or y0_str.strip() == "":
-        return ""
+    if not y0_str or not y0_str.strip():
+        return [], "" # Empty list, empty string
     
-    # Check if y0 is an array-like format
-    if ',' in y0_str or ('[' in y0_str and ']' in y0_str):
-        # Remove brackets if present
-        cleaned = y0_str.strip()
+    cleaned = y0_str.strip()
+    values = []
+    basic_latex = cleaned # Default fallback
+
+    # Check if y0 is an array-like format (heuristic)
+    is_list_format = (',') in cleaned or (cleaned.startswith('[') and cleaned.endswith(']'))
+
+    if is_list_format:
+        # Remove brackets if present for splitting
         if cleaned.startswith('[') and cleaned.endswith(']'):
-            cleaned = cleaned[1:-1]
+            content = cleaned[1:-1].strip()
+        else:
+            content = cleaned
         
-        # Split values
-        values = [v.strip() for v in cleaned.split(',')]
-        try:
-            # Convert to LaTeX vector format
-            return r'\begin{pmatrix} ' + r' \\ '.join(values) + r' \end{pmatrix}'
-        except:
-            return y0_str
-    
-    # Single value
-    return y0_str 
+        if content: # Avoid splitting an empty string
+            values = [v.strip() for v in content.split(',')]
+            # Try to format as pmatrix if successful
+            try:
+                basic_latex = r'\begin{pmatrix} ' + r' \\ '.join(values) + r' \end{pmatrix}'
+            except:
+                 basic_latex = f"[{content}]" # Fallback LaTeX for list
+        else: # Input was '[]'
+             values = []
+             basic_latex = r'\begin{pmatrix} \end{pmatrix}'
+
+    else: # Single value
+        values = [cleaned] # List with one element
+        basic_latex = cleaned # LaTeX is just the value itself
+        
+    # Return the list of individual value strings and the basic formatted value
+    return values, basic_latex
+
+
+# Rename the old function to avoid breaking calls if missed (can remove later)
+def format_initial_conditions_latex(y0_str):
+     _, basic_latex = _parse_y0_input(y0_str)
+     return basic_latex 

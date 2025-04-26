@@ -10,19 +10,6 @@ import re # Import regex
 from moses_ode.numerical.integration import trapezoid, simpson_1_3, simpson_3_8, romberg
 from moses_ode.numerical.differentiation import forward_difference, backward_difference, central_difference, second_derivative
 
-# --- Add CSS for LaTeX Preview ---
-st.markdown("""
-<style>
-.latex-preview {
-    background-color: #f0f8ff;
-    border-radius: 6px;
-    padding: 10px;
-    margin-bottom: 10px; /* Space below preview, above input */
-    border: 1px solid #e0e0e0;
-}
-</style>
-""", unsafe_allow_html=True)
-
 # --- LaTeX Converter for Numerical Functions ---
 def convert_numerical_function_to_latex(func_string, var='x'):
     """
@@ -503,6 +490,21 @@ def create_differentiation_tab():
 
 def create_numerical_methods_tab():
     """Creates the main container for the Numerical Methods tab."""
+    
+    # --- Add CSS for LaTeX Preview (Moved Here) ---
+    st.markdown("""
+    <style>
+    .latex-preview {
+        background-color: #f0f8ff;
+        border-radius: 6px;
+        padding: 10px;
+        margin-bottom: 10px; /* Space below preview, above input */
+        border: 1px solid #e0e0e0;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    # --- End CSS ---
+    
     st.markdown("## Numerical Methods")
     integration_tab, differentiation_tab = st.tabs(["Integration", "Differentiation"])
 

@@ -247,8 +247,10 @@ def main():
                     
                     update_status("Processing results...", 80)
                     
-                    # Prepare DataFrame with results
-                    df, y_dim, has_nan, has_inf, rows_removed = prepare_results_dataframe(t, y, max_points)
+                    # Prepare DataFrame with results, passing the original ODE string
+                    df, y_dim, has_nan, has_inf, rows_removed = prepare_results_dataframe(
+                        t, y, max_points, ode_input_str=ode_val
+                    )
                     
                     # Show warnings if needed
                     if has_nan:
