@@ -269,6 +269,9 @@ def create_problem_definition_ui():
         st.session_state.y0_input = ""
     if "show_validation_success" not in st.session_state:
         st.session_state.show_validation_success = False
+    # Initialize t_end with default value (5.0)
+    if "t_end" not in st.session_state:
+        st.session_state.t_end = 5.0
     
     # Enhanced ODE input with more prominent styling
     st.markdown("""
@@ -522,7 +525,7 @@ def create_problem_definition_ui():
         t_end_min_value = float(st.session_state.get("t0_input", 0.0) + 0.1)
         t_end = st.number_input(
             "End Time (t_end)",
-            value=float(st.session_state.t_end), 
+            value=float(st.session_state.get("t_end", 5.0)), 
             min_value=t_end_min_value, 
             help="Ending time for the simulation",
             step=1.0,
